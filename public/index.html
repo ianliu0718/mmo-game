@@ -3,25 +3,75 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Web MMO 連線測試</title>
+  <title>天堂 Web MMO 原型</title>
   <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; padding: 0; background-color: #1a1a1a; color: #fff; font-family: monospace; overflow: hidden; }
-    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.6); padding: 8px 12px; border-radius: 4px; pointer-events: none; }
-    canvas { display: block; width: 100vw; height: 100vh; background-color: #242424; cursor: crosshair; }
+    * { box-sizing: border-box; user-select: none; }
+    body {
+      margin: 0; padding: 0; background-color: #0b0c10;
+      color: #eaeaea; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+
+    /* 頂部經典天堂狀態欄 */
+    #topBar {
+      position: absolute; top: 0; left: 0; width: 100%; height: 75px;
+      background: rgba(18, 18, 18, 0.92); border-bottom: 2px solid #554422;
+      display: flex; align-items: center; padding: 0 16px; gap: 20px; z-index: 20;
+    }
+    .char-info { display: flex; flex-direction: column; min-width: 130px; }
+    .char-name { font-weight: bold; color: #ffd700; font-size: 15px; }
+    .bar-group { display: flex; flex-direction: column; gap: 4px; width: 220px; }
+    .bar-wrap { height: 14px; background: #222; border: 1px solid #444; border-radius: 2px; position: relative; overflow: hidden; }
+    .bar-fill { height: 100%; transition: width 0.2s; }
+    .bar-hp { background: linear-gradient(180deg, #e53935, #8e0000); }
+    .bar-mp { background: linear-gradient(180deg, #1e88e5, #004c8c); }
+    .bar-text { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; font-weight: bold; text-shadow: 1px 1px 2px #000; }
+
+    /* 戰鬥對話面板 */
+    #logBox {
+      position: absolute; bottom: 12px; left: 12px; width: 340px; height: 130px;
+      background: rgba(0, 0, 0, 0.75); border: 1px solid #443322; border-radius: 4px;
+      padding: 8px; font-size: 12px; overflow-y: auto; z-index: 20;
+      pointer-events: none;
+    }
+    .log-item { margin-bottom: 3px; line-height: 1.3; }
+    .log-sys { color: #f59e0b; }
+    .log-dmg { color: #ef4444; }
+
+    canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
   </style>
 </head>
 <body>
-  <div id="ui">
-    <div>連線狀態: <span id="status">連線中...</span></div>
-    <div>點擊地圖任意處移動角色</div>
+
+  <!-- 天堂頂部數值條 -->
+  <div id="topBar">
+    <div class="char-info">
+      <span class="char-name" id="uiName">冒險者</span>
+      <span style="font-size: 11px; color: #aaa;">Lv.1 騎士</span>
+    </div>
+    <div class="bar-group">
+      <div class="bar-wrap">
+        <div id="hpFill" class="bar-fill bar-hp" style="width: 100%;"></div>
+        <div id="hpText" class="bar-text">HP 100 / 100</div>
+      </div>
+      <div class="bar-wrap">
+        <div id="mpFill" class="bar-fill bar-mp" style="width: 100%;"></div>
+        <div id="mpText" class="bar-text">MP 50 / 50</div>
+      </div>
+    </div>
   </div>
+
+  <!-- 戰鬥日誌 -->
+  <div id="logBox">
+    <div class="log-item log-sys">[系統] 遊戲連線中...</div>
+  </div>
+
   <canvas id="gameCanvas"></canvas>
 
   <script>
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
-    const statusEl = document.getElementById('status');
+    const logBox = document.getElementById('logBox');
 
     function resize() {
       canvas.width = window.innerWidth;
@@ -30,92 +80,206 @@
     window.addEventListener('resize', resize);
     resize();
 
+    function addLog(text, type = 'sys') {
+      const el = document.createElement('div');
+      el.className = `log-item ${type === 'dmg' ? 'log-dmg' : 'log-sys'}`;
+      el.textContent = text;
+      logBox.appendChild(el);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
     let myId = null;
     let players = {};
+    let monsters = {};
 
-    // 自動匹配 wss:// 或 ws://
+    // 2.5D 等角投影尺寸設定（典型菱形網格長寬比 2:1）
+    const TILE_WIDTH = 64;
+    const TILE_HEIGHT = 32;
+
+    // 將 (gridX, gridY) 轉為螢幕 2.5D 畫布座標
+    function gridToScreen(gx, gy) {
+      const originX = canvas.width / 2;
+      const originY = canvas.height / 3;
+      const sx = originX + (gx - gy) * (TILE_WIDTH / 2);
+      const sy = originY + (gx + gy) * (TILE_HEIGHT / 2);
+      return { x: sx, y: sy };
+    }
+
+    // 將螢幕點擊座標 (sx, sy) 逆運算轉回網格座標 (gx, gy)
+    function screenToGrid(sx, sy) {
+      const originX = canvas.width / 2;
+      const originY = canvas.height / 3;
+      const dx = sx - originX;
+      const dy = sy - originY;
+      const gx = (dx / (TILE_WIDTH / 2) + dy / (TILE_HEIGHT / 2)) / 2;
+      const gy = (dy / (TILE_HEIGHT / 2) - dx / (TILE_WIDTH / 2)) / 2;
+      return { x: Math.round(gx), y: Math.round(gy) };
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}`);
 
-    ws.onopen = () => {
-      statusEl.textContent = '已連線';
-      statusEl.style.color = '#4ade80';
-    };
-
-    ws.onclose = () => {
-      statusEl.textContent = '已斷線';
-      statusEl.style.color = '#f87171';
-    };
+    ws.onopen = () => addLog('[系統] 已成功連線至伺服器');
+    ws.onclose = () => addLog('[系統] 連線已斷開');
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
+
       if (data.type === 'INIT') {
         myId = data.playerId;
         players = data.players;
+        monsters = data.monsters;
+        const me = players[myId];
+        if (me) {
+          document.getElementById('uiName').textContent = me.name;
+          updateBars(me.hp, me.maxHp, me.mp, me.maxMp);
+        }
       } else if (data.type === 'PLAYER_JOINED') {
         players[data.player.id] = data.player;
+        addLog(`[玩家] ${data.player.name} 進入了地圖`);
       } else if (data.type === 'PLAYER_MOVED') {
         if (players[data.playerId]) {
           players[data.playerId].x = data.x;
           players[data.playerId].y = data.y;
         }
+      } else if (data.type === 'COMBAT_LOG') {
+        addLog(data.text, 'dmg');
+        if (data.mobId && monsters[data.mobId]) {
+          monsters[data.mobId].hp = data.mobHp;
+        }
+      } else if (data.type === 'MOB_RESPAWN') {
+        monsters[data.mob.id] = data.mob;
+        addLog(`[系統] ${data.mob.name} 重新出現了`);
       } else if (data.type === 'PLAYER_LEFT') {
-        delete players[data.playerId];
+        if (players[data.playerId]) {
+          addLog(`[玩家] ${players[data.playerId].name} 離開了`);
+          delete players[data.playerId];
+        }
       }
       render();
     };
 
-    function sendMove(x, y) {
-      if (!myId || ws.readyState !== WebSocket.OPEN) return;
-      players[myId].x = x;
-      players[myId].y = y;
-      render();
-      ws.send(JSON.stringify({ type: 'MOVE', x, y }));
+    function updateBars(hp, maxHp, mp, maxMp) {
+      document.getElementById('hpFill').style.width = (hp / maxHp * 100) + '%';
+      document.getElementById('hpText').textContent = `HP ${hp} / ${maxHp}`;
+      document.getElementById('mpFill').style.width = (mp / maxMp * 100) + '%';
+      document.getElementById('mpText').textContent = `MP ${mp} / ${maxMp}`;
     }
 
+    // 點擊事件：判斷是攻擊怪物還是地面移動
     canvas.addEventListener('click', (e) => {
-      sendMove(e.clientX, e.clientY);
+      if (!myId || ws.readyState !== WebSocket.OPEN) return;
+
+      const clickX = e.clientX;
+      const clickY = e.clientY;
+
+      // 1. 檢查是否點擊到任一隻怪物
+      for (const id in monsters) {
+        const mob = monsters[id];
+        if (mob.hp <= 0) continue;
+        const pos = gridToScreen(mob.x, mob.y);
+        // 怪物點擊判定區域 (半徑 24px)
+        const dist = Math.hypot(clickX - pos.x, clickY - (pos.y - 12));
+        if (dist <= 24) {
+          ws.send(JSON.stringify({ type: 'ATTACK_MOB', mobId: id }));
+          return;
+        }
+      }
+
+      // 2. 若無點擊到怪物，則計算地面網格進行移動
+      const target = screenToGrid(clickX, clickY);
+      if (target.x >= 0 && target.x <= 20 && target.y >= 0 && target.y <= 20) {
+        players[myId].x = target.x;
+        players[myId].y = target.y;
+        render();
+        ws.send(JSON.stringify({ type: 'MOVE', x: target.x, y: target.y }));
+      }
     });
 
-    // 支援手機觸控
-    canvas.addEventListener('touchstart', (e) => {
-      const touch = e.touches[0];
-      sendMove(touch.clientX, touch.clientY);
-    }, { passive: true });
+    // 繪製單塊 2.5D 菱形地磚
+    function drawTile(gx, gy) {
+      const pos = gridToScreen(gx, gy);
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y);
+      ctx.lineTo(pos.x + TILE_WIDTH / 2, pos.y + TILE_HEIGHT / 2);
+      ctx.lineTo(pos.x, pos.y + TILE_HEIGHT);
+      ctx.lineTo(pos.x - TILE_WIDTH / 2, pos.y + TILE_HEIGHT / 2);
+      ctx.closePath();
+
+      ctx.fillStyle = ((gx + gy) % 2 === 0) ? '#1f2937' : '#111827';
+      ctx.fill();
+      ctx.strokeStyle = '#374151';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+    }
 
     function render() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // 繪製格線背景
-      ctx.strokeStyle = '#333';
-      ctx.lineWidth = 1;
-      const gridSize = 40;
-      for (let x = 0; x < canvas.width; x += gridSize) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-      }
-      for (let y = 0; y < canvas.height; y += gridSize) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+
+      // 1. 繪製 20x20 菱形等角地圖
+      for (let x = 0; x <= 20; x++) {
+        for (let y = 0; y <= 20; y++) {
+          drawTile(x, y);
+        }
       }
 
-      // 繪製所有玩家
-      for (const id in players) {
-        const p = players[id];
-        const isMe = id === myId;
-        
-        ctx.fillStyle = isMe ? '#22c55e' : '#ef4444';
+      // 2. 繪製怪物
+      for (const id in monsters) {
+        const mob = monsters[id];
+        if (mob.hp <= 0) continue;
+        const pos = gridToScreen(mob.x, mob.y);
+        const cy = pos.y + TILE_HEIGHT / 2 - 8;
+
+        // 史萊姆本體
+        ctx.fillStyle = '#10b981';
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+        ctx.arc(pos.x, cy, 14, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = '#fff';
+        ctx.strokeStyle = '#047857';
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        ctx.fillStyle = '#fff';
-        ctx.font = '12px sans-serif';
+        // 怪物血條
+        const barW = 32;
+        const hpRate = mob.hp / mob.maxHp;
+        ctx.fillStyle = '#444';
+        ctx.fillRect(pos.x - barW / 2, cy - 22, barW, 4);
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(pos.x - barW / 2, cy - 22, barW * hpRate, 4);
+
+        // 怪物名稱
+        ctx.fillStyle = '#f9fafb';
+        ctx.font = '10px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(isMe ? '我' : id.slice(-4), p.x, p.y - 22);
+        ctx.fillText(mob.name, pos.x, cy - 26);
+      }
+
+      // 3. 繪製玩家角色
+      for (const id in players) {
+        const p = players[id];
+        const isMe = id === myId;
+        const pos = gridToScreen(p.x, p.y);
+        const cy = pos.y + TILE_HEIGHT / 2 - 12;
+
+        // 角色身體
+        ctx.fillStyle = isMe ? '#3b82f6' : '#f59e0b';
+        ctx.beginPath();
+        ctx.arc(pos.x, cy, 15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // 名稱
+        ctx.fillStyle = isMe ? '#93c5fd' : '#fcd34d';
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(isMe ? '【我】' + p.name : p.name, pos.x, cy - 20);
       }
     }
+
+    // 啟動後初次渲染
+    render();
   </script>
 </body>
 </html>
