@@ -1,0 +1,24 @@
+{
+  "name": "mmo-game",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "ws": "^8.22.0"
+  },
+  "description": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ianliu0718/mmo-game.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ianliu0718/mmo-game/issues"
+  },
+  "homepage": "https://github.com/ianliu0718/mmo-game#readme"
+}

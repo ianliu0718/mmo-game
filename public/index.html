@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Web MMO 連線測試</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; background-color: #1a1a1a; color: #fff; font-family: monospace; overflow: hidden; }
+    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.6); padding: 8px 12px; border-radius: 4px; pointer-events: none; }
+    canvas { display: block; width: 100vw; height: 100vh; background-color: #242424; cursor: crosshair; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div>連線狀態: <span id="status">連線中...</span></div>
+    <div>點擊地圖任意處移動角色</div>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    let myId = null;
+    let players = {};
+
+    // 自動匹配 wss:// 或 ws://
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+
+    ws.onopen = () => {
+      statusEl.textContent = '已連線';
+      statusEl.style.color = '#4ade80';
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = '已斷線';
+      statusEl.style.color = '#f87171';
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'INIT') {
+        myId = data.playerId;
+        players = data.players;
+      } else if (data.type === 'PLAYER_JOINED') {
+        players[data.player.id] = data.player;
+      } else if (data.type === 'PLAYER_MOVED') {
+        if (players[data.playerId]) {
+          players[data.playerId].x = data.x;
+          players[data.playerId].y = data.y;
+        }
+      } else if (data.type === 'PLAYER_LEFT') {
+        delete players[data.playerId];
+      }
+      render();
+    };
+
+    function sendMove(x, y) {
+      if (!myId || ws.readyState !== WebSocket.OPEN) return;
+      players[myId].x = x;
+      players[myId].y = y;
+      render();
+      ws.send(JSON.stringify({ type: 'MOVE', x, y }));
+    }
+
+    canvas.addEventListener('click', (e) => {
+      sendMove(e.clientX, e.clientY);
+    });
+
+    // 支援手機觸控
+    canvas.addEventListener('touchstart', (e) => {
+      const touch = e.touches[0];
+      sendMove(touch.clientX, touch.clientY);
+    }, { passive: true });
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // 繪製格線背景
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      const gridSize = 40;
+      for (let x = 0; x < canvas.width; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+
+      // 繪製所有玩家
+      for (const id in players) {
+        const p = players[id];
+        const isMe = id === myId;
+        
+        ctx.fillStyle = isMe ? '#22c55e' : '#ef4444';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(isMe ? '我' : id.slice(-4), p.x, p.y - 22);
+      }
+    }
+  </script>
+</body>
+</html>
